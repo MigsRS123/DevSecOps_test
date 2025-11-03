@@ -27,25 +27,59 @@ jobs:
         run: |
           cd app
           nohup python server.py > ../flask.log 2>&1 &
-          sleep 15
-          curl -f http://localhost:8080/ || exit 1
-          echo "✅ App is running!"
+          echo "Waiting for app to start..."
+          sleep 20
+          
+          # Verifica múltiplas vezes se a app está rodando
+          for i in {1..5}; do
+            if curl -s http://localhost:8080/ > /dev/null; then
+              echo "✅ App is running! (attempt $i)"
+              break
+            else
+              echo "⏳ Waiting for app... (attempt $i)"
+              sleep 5
+            fi
+          done
+          
+          # Verificação final
+          curl -f http://localhost:8080/ || (cat ../flask.log && exit 1)
 
-      - name: Run ZAP Security Scan
-        uses: zaproxy/action-baseline@v0.10.0
-        with:
-          target: 'http://localhost:8080'
-          cmd_options: '-a -J zap_report.json -r zap_report.html'
-
-      - name: Simple Security Check
+      - name: Run ZAP with Docker
         run: |
-          echo "🔍 Checking scan results..."
-          if [ -f zap_report.json ]; then
-            # Método SUPER SIMPLES - só verifica se o arquivo existe
-            echo "✅ Scan completed - reports generated"
-            echo "📊 Reports available for download in Artifacts"
+          echo "🔒 Starting ZAP security scan..."
+          
+          # Obtém o IP do host
+          HOST_IP=$(hostname -I | awk '{print $1}')
+          echo "Host IP: $HOST_IP"
+          
+          # Executa ZAP via Docker
+          docker run --rm \
+            -v $(pwd):/zap/wrk/:rw \
+            -t owasp/zap2docker-stable zap-baseline.py \
+            -t http://$HOST_IP:8080 \
+            -J zap_report.json \
+            -r zap_report.html \
+            -a \
+            -m 5
+          
+          echo "✅ ZAP scan completed!"
+
+      - name: List all files
+        run: |
+          echo "📁 Files in workspace:"
+          ls -la
+
+      - name: Check reports
+        run: |
+          echo "🔍 Checking generated reports..."
+          if [ -f zap_report.html ] && [ -f zap_report.json ]; then
+            echo "✅ Both reports generated successfully!"
+            echo "HTML size: $(wc -c < zap_report.html) bytes"
+            echo "JSON size: $(wc -c < zap_report.json) bytes"
           else
-            echo "❌ Scan failed - no report generated"
+            echo "❌ Reports missing:"
+            [ -f zap_report.html ] || echo "  - zap_report.html missing"
+            [ -f zap_report.json ] || echo "  - zap_report.json missing"
             exit 1
           fi
 
@@ -56,4 +90,13 @@ jobs:
           path: |
             zap_report.html
             zap_report.json
+            flask.log
           retention-days: 30
+
+      - name: Debug - Check network
+        run: |
+          echo "=== NETWORK DEBUG ==="
+          netstat -tulpn | grep :8080 || echo "Port 8080 not found"
+          ps aux | grep python || echo "No Python processes"
+          docker ps || echo "No docker containers"
+          ip addr show || echo "No network info"
