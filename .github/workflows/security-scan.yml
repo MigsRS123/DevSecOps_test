@@ -48,15 +48,11 @@ jobs:
         run: |
           echo "🔒 Starting ZAP security scan..."
           
-          # Obtém o IP do host
-          HOST_IP=$(hostname -I | awk '{print $1}')
-          echo "Host IP: $HOST_IP"
-          
-          # Executa ZAP via Docker
+          # Executa ZAP via Docker com imagem correta do GHCR
           docker run --rm \
             -v $(pwd):/zap/wrk/:rw \
-            -t owasp/zap2docker-stable zap-baseline.py \
-            -t http://$HOST_IP:8080 \
+            -t ghcr.io/zaproxy/zaproxy:stable zap-baseline.py \
+            -t http://localhost:8080 \
             -J zap_report.json \
             -r zap_report.html \
             -a \
@@ -76,14 +72,86 @@ jobs:
             echo "✅ Both reports generated successfully!"
             echo "HTML size: $(wc -c < zap_report.html) bytes"
             echo "JSON size: $(wc -c < zap_report.json) bytes"
-          else
-            echo "❌ Reports missing:"
-            [ -f zap_report.html ] || echo "  - zap_report.html missing"
-            [ -f zap_report.json ] || echo "  - zap_report.json missing"
-            exit 1
-          fi
+            
+            # Mostra preview do conteúdo
+            echo "--- HTML Preview (first 10 lines) ---"
+            head -10 zap_report.html
+            echo "--- JSON Preview ---"
+            python -c "
+            import json
+            try:
+                with open('zap_report.json', 'r') as f:
+                    data = json.load(f)
+                print(f'JSON keys: {list(data.keys())}')
+                if 'site' in data:
+                    alerts = data['site'][0].get('alerts', [])
+                    print(f'Number of alerts: {len(alerts)}')
+                    for alert in alerts[:3]:
+                        print(f'  - {alert.get(\"name\")} (Risk: {alert.get(\"risk\")})')
+            except Exception as e:
+                print(f'Error reading JSON: {e}')
+            "
+                    else
+                        echo "❌ Reports missing:"
+                        [ -f zap_report.html ] || echo "  - zap_report.html missing"
+                        [ -f zap_report.json ] || echo "  - zap_report.json missing"
+                        exit 1
+                    fi
+
+      - name: Check for High/Medium vulnerabilities
+        run: |
+          echo "🔒 Checking for High/Medium vulnerabilities..."
+          if [ -f zap_report.json ]; then
+            python -c "
+                    import json
+                    import sys
+
+                    try:
+                        with open('zap_report.json', 'r') as f:
+                            data = json.load(f)
+                        
+                        high_count = 0
+                        medium_count = 0
+                        
+                        # Extrai alertas do JSON
+                        if 'site' in data:
+                            alerts = data['site'][0].get('alerts', [])
+                        else:
+                            alerts = []
+                        
+                        for alert in alerts:
+                            risk = alert.get('risk', 'Informational')
+                            if risk == 'High':
+                                high_count += 1
+                                print(f'🚨 HIGH: {alert.get(\"name\")}')
+                            elif risk == 'Medium':
+                                medium_count += 1
+                                print(f'⚠️ MEDIUM: {alert.get(\"name\")}')
+                        
+                        print('')
+                        print('📊 SECURITY SCAN SUMMARY:')
+                        print(f'   High risk vulnerabilities: {high_count}')
+                        print(f'   Medium risk vulnerabilities: {medium_count}')
+                        print(f'   Total alerts: {len(alerts)}')
+                        
+                        if high_count > 0 or medium_count > 0:
+                            print('❌ CRITICAL: High or Medium risk vulnerabilities detected!')
+                            print('Failing the pipeline for security reasons.')
+                            sys.exit(1)
+                        else:
+                            print('✅ No High or Medium risk vulnerabilities found.')
+                            
+                    except Exception as e:
+                        print(f'❌ Error analyzing report: {e}')
+                        sys.exit(1)
+                    "
+                            else
+                                echo "❌ No ZAP report found for analysis"
+                                exit 1
+                            fi
 
       - name: Upload security reports
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: security-scan-results
@@ -93,10 +161,12 @@ jobs:
             flask.log
           retention-days: 30
 
-      - name: Debug - Check network
+      - name: Scan completed
+        if: always()
         run: |
-          echo "=== NETWORK DEBUG ==="
-          netstat -tulpn | grep :8080 || echo "Port 8080 not found"
-          ps aux | grep python || echo "No Python processes"
-          docker ps || echo "No docker containers"
-          ip addr show || echo "No network info"
+          echo "=========================================="
+          echo "           SCAN COMPLETED!               "
+          echo "=========================================="
+          echo "📁 Reports available in Artifacts section"
+          echo "🔒 Security check: ${{ job.status }}"
+          echo "=========================================="
